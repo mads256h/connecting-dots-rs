@@ -1,6 +1,7 @@
 use std::sync::Arc;
 use std::time::Duration;
-use wgpu::{BindGroup, Buffer, ComputePipeline, Device};
+use std::vec;
+use wgpu::{BindGroup, Buffer, CompositeAlphaMode, ComputePipeline, Device, TextureView};
 use wgpu::util::DeviceExt;
 use winit::window::Window;
 use bytemuck::{Pod, Zeroable};
@@ -10,6 +11,8 @@ use log::info;
 #[cfg(target_arch = "wasm32")]
 use wasm_bindgen::prelude::*;
 
+const SAMPLE_COUNT: u32 = 4;
+
 pub struct State {
     pub window: Arc<Window>,
 
@@ -18,8 +21,11 @@ pub struct State {
     queue: wgpu::Queue,
     config: wgpu::SurfaceConfiguration,
     is_surface_configured: bool,
+    msaa_texture_view: TextureView,
 
+    window_size_buffer: Buffer,
     delta_time_buffer: Buffer,
+    points_buffer: Buffer,
 
     compute_new_positions_pipeline: wgpu::ComputePipeline,
     compute_new_positions_bind_group: BindGroup,
@@ -88,29 +94,9 @@ impl State {
             desired_maximum_frame_latency: 2,
         };
 
-        let mut rng = rand::rng();
+        let msaa_texture_view = Self::create_msaa_texture(&device, &config);
 
-        let points_count = 8000;
 
-        let mut points = Vec::<Point>::with_capacity(points_count);
-        for _ in 0..points_count {
-            let x = rng.random_range(0..size.width) as f32;
-            let y = rng.random_range(0..size.width) as f32;
-
-            let invertx = rng.random_bool(0.5);
-            let inverty = rng.random_bool(0.5);
-            let vx = rng.random_range(1.0..3.0) * if invertx { -1.0 } else { 1.0 };
-            let vy = rng.random_range(1.0..3.0) * if inverty { -1.0 } else { 1.0 };
-            points.push(Point { position: [x, y], velocity: [vx, vy] });
-        }
-
-        let points_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Points Buffer"),
-            contents: bytemuck::cast_slice(&points),
-            usage: wgpu::BufferUsages::STORAGE
-                | wgpu::BufferUsages::COPY_DST
-                | wgpu::BufferUsages::COPY_SRC,
-        });
 
         let window_size = WindowSize { size: [size.width as f32, size.height as f32] };
 
@@ -120,6 +106,7 @@ impl State {
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
 
+
         let delta_time = DeltaTime { dt: 0.016 };
         
         let delta_time_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -127,9 +114,41 @@ impl State {
             contents: bytemuck::bytes_of(&delta_time),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
+
+
+        let point_size = 8.0 as f32;
+
+        let point_size_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Point Size Buffer"),
+            contents: bytemuck::bytes_of(&point_size),
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        });
         
 
-        let (compute_new_positions_pipeline, compute_new_positions_bind_group)  = Self::create_compute_new_positions_pipeline(&device, &points_buffer, &window_size_buffer, &delta_time_buffer);
+        let intensity = 0.8 as f32;
+
+        let intensity_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Intensity Buffer"),
+            contents: bytemuck::bytes_of(&intensity),
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        });
+
+
+        let points_count = 1000;
+
+        let points = Self::create_points(points_count, window_size);
+
+
+        let points_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Points Buffer"),
+            contents: bytemuck::cast_slice(&points),
+            usage: wgpu::BufferUsages::STORAGE
+                | wgpu::BufferUsages::COPY_DST
+                | wgpu::BufferUsages::COPY_SRC,
+        });
+        
+
+        let (compute_new_positions_pipeline, compute_new_positions_bind_group) = Self::create_compute_new_positions_pipeline(&device, &points_buffer, &window_size_buffer, &delta_time_buffer);
 
 
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -160,7 +179,29 @@ impl State {
                         min_binding_size: None,
                     },
                     count: None,
-                }
+                },
+
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::VERTEX,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+
+                wgpu::BindGroupLayoutEntry {
+                    binding: 3,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
             ],
         });
 
@@ -175,6 +216,14 @@ impl State {
                 wgpu::BindGroupEntry {
                     binding: 1,
                     resource: window_size_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: point_size_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: intensity_buffer.as_entire_binding(),
                 },
             ],
         });
@@ -201,18 +250,18 @@ impl State {
                 entry_point: Some("fs_main"),
                 targets: &[Some(wgpu::ColorTargetState {
                     format: config.format,
-                    blend: Some(wgpu::BlendState::REPLACE),
+                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
             }),
             primitive: wgpu::PrimitiveState {
-                topology: wgpu::PrimitiveTopology::PointList,
+                topology: wgpu::PrimitiveTopology::TriangleStrip,
                 ..Default::default()
             },
             depth_stencil: None,
             multisample: wgpu::MultisampleState { 
-                count: 1,
+                count: SAMPLE_COUNT,
                 mask: !0,
                 alpha_to_coverage_enabled: false,
             },
@@ -227,7 +276,10 @@ impl State {
             queue,
             config,
             is_surface_configured: false,
+            msaa_texture_view,
+            window_size_buffer,
             delta_time_buffer,
+            points_buffer,
             compute_new_positions_pipeline,
             compute_new_positions_bind_group,
             render_pipeline,
@@ -242,6 +294,14 @@ impl State {
             self.config.height = height;
             self.surface.configure(&self.device, &self.config);
             self.is_surface_configured = true;
+
+            self.msaa_texture_view = Self::create_msaa_texture(&self.device, &self.config);
+
+            let window_size = WindowSize { size: [width as f32, height as f32] };
+            self.queue.write_buffer(&self.window_size_buffer, 0, bytemuck::bytes_of(&window_size));
+
+            let points = Self::create_points(self.points_count, window_size);
+            self.queue.write_buffer(&self.points_buffer, 0, bytemuck::cast_slice(&points));
         }
     }
 
@@ -277,8 +337,8 @@ impl State {
             let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Render Pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &view,
-                    resolve_target: None,
+                    view: &self.msaa_texture_view,
+                    resolve_target: Some(&view),
                     depth_slice: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(wgpu::Color {
@@ -297,7 +357,7 @@ impl State {
 
             render_pass.set_pipeline(&self.render_pipeline);
             render_pass.set_bind_group(0, &self.render_bind_group, &[]);
-            render_pass.draw(0..self.points_count as u32, 0..1);
+            render_pass.draw(0..4, 0..self.points_count as u32);
         }
 
         self.queue.submit(std::iter::once(encoder.finish()));
@@ -309,7 +369,7 @@ impl State {
     pub fn update(&self, delta_time: Duration) {
         let delta_time = delta_time.as_secs_f32();
         info!("delta_time: {delta_time}");
-        self.queue.write_buffer(&self.delta_time_buffer, 0, bytemuck::cast_slice(&[delta_time]));
+        self.queue.write_buffer(&self.delta_time_buffer, 0, bytemuck::bytes_of(&delta_time));
     }
 
     fn create_compute_new_positions_pipeline(device: &Device, points_buffer: &Buffer, window_size_buffer: &Buffer, delta_time_buffer: &Buffer) -> (ComputePipeline, BindGroup) {
@@ -393,6 +453,49 @@ impl State {
 
         (compute_pipeline, bind_group)
     }
+
+    fn create_points(points_count: usize, window_size: WindowSize) -> Vec<Point> {
+        let width = window_size.size[0] as u32;
+        let height = window_size.size[1] as u32;
+
+        let mut rng = rand::rng();
+
+        let mut points = Vec::<Point>::with_capacity(points_count);
+        for _ in 0..points_count {
+            let x = rng.random_range(0..width) as f32;
+            let y = rng.random_range(0..height) as f32;
+
+            let invertx = rng.random_bool(0.5);
+            let inverty = rng.random_bool(0.5);
+            let vx = rng.random_range(1.0..3.0) * if invertx { -1.0 } else { 1.0 };
+            let vy = rng.random_range(1.0..3.0) * if inverty { -1.0 } else { 1.0 };
+            points.push(Point { position: [x, y], velocity: [vx, vy] });
+        }
+
+        return points;
+    }
+
+    fn create_msaa_texture(
+    device: &wgpu::Device,
+    config: &wgpu::SurfaceConfiguration,
+) -> wgpu::TextureView {
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("MSAA Color Texture"),
+        size: wgpu::Extent3d {
+            width: config.width,
+            height: config.height,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: SAMPLE_COUNT,
+        dimension: wgpu::TextureDimension::D2,
+        format: config.format,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+        view_formats: &[],
+    });
+
+    texture.create_view(&wgpu::TextureViewDescriptor::default())
+}
 }
 
 
