@@ -1,7 +1,5 @@
-use connecting_dots_rs::run;
 use clap::Parser;
-
-
+use connecting_dots_rs::run;
 
 #[derive(Parser, Debug)]
 #[command(version, about)]
@@ -11,10 +9,9 @@ struct Args {
     background_image: Option<String>,
 
     /// Window class
-    #[arg(short, long, default_value="connecting-dots")]
+    #[arg(short, long, default_value = "connecting-dots")]
     class: String,
 }
-
 
 fn main() -> anyhow::Result<()> {
     let args = Args::try_parse()?;
@@ -23,4 +20,3 @@ fn main() -> anyhow::Result<()> {
 
     Ok(())
 }
-

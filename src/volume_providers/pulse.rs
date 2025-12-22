@@ -1,13 +1,20 @@
 use std::{cell::RefCell, rc::Rc};
 
-use clap::crate_version;
-use libpulse_binding::{self, context::{Context, FlagSet, State}, mainloop::standard::Mainloop, proplist::{Proplist, properties}, sample::{Format, Spec}, stream::{self, Stream}};
+use crate::volume_providers::volume_provider::VolumeProvider;
 use anyhow::Result;
 use anyhow::anyhow;
+use clap::crate_version;
 use libpulse_binding::def::BufferAttr;
+use libpulse_binding::{
+    self,
+    context::{Context, FlagSet, State},
+    mainloop::standard::Mainloop,
+    proplist::{Proplist, properties},
+    sample::{Format, Spec},
+    stream::{self, Stream},
+};
 use libpulse_sys::pa_operation_state_t;
 use log::info;
-use crate::volume_providers::volume_provider::VolumeProvider;
 
 pub struct PulseAudioVolumeProvider {
     main_loop: Rc<RefCell<Mainloop>>,
@@ -17,16 +24,28 @@ pub struct PulseAudioVolumeProvider {
 
 impl PulseAudioVolumeProvider {
     pub fn new() -> Result<Self> {
-        let main_loop = Rc::new(RefCell::new(Mainloop::new().ok_or(anyhow!("Failed to create Mainloop"))?));
+        let main_loop = Rc::new(RefCell::new(
+            Mainloop::new().ok_or(anyhow!("Failed to create Mainloop"))?,
+        ));
         let mut proplist = Proplist::new().ok_or(anyhow!("Failed to create Proplist"))?;
-        proplist.set_str(properties::APPLICATION_NAME, "Connecting Dots").unwrap();
-        proplist.set_str(properties::APPLICATION_ID, "org.mads256h.connectingdots").unwrap();
-        proplist.set_str(properties::APPLICATION_ICON_NAME, "audio-card").unwrap();
-        proplist.set_str(properties::APPLICATION_VERSION, crate_version!()).unwrap();
-        let context = Rc::new(RefCell::new(Context::new_with_proplist(&*main_loop.borrow(), "connecting_dots", &proplist).ok_or(anyhow!("Failed to create context"))?));
+        proplist
+            .set_str(properties::APPLICATION_NAME, "Connecting Dots")
+            .unwrap();
+        proplist
+            .set_str(properties::APPLICATION_ID, "org.mads256h.connectingdots")
+            .unwrap();
+        proplist
+            .set_str(properties::APPLICATION_ICON_NAME, "audio-card")
+            .unwrap();
+        proplist
+            .set_str(properties::APPLICATION_VERSION, crate_version!())
+            .unwrap();
+        let context = Rc::new(RefCell::new(
+            Context::new_with_proplist(&*main_loop.borrow(), "connecting_dots", &proplist)
+                .ok_or(anyhow!("Failed to create context"))?,
+        ));
 
         context.borrow_mut().connect(None, FlagSet::NOFLAGS, None)?;
-
 
         loop {
             match context.borrow().get_state() {
@@ -45,9 +64,7 @@ impl PulseAudioVolumeProvider {
 
             let operation = context.borrow().introspect().get_server_info(move |info| {
                 *default_sink_name.borrow_mut() =
-                    info.default_sink_name
-                        .as_ref()
-                        .map(|s| s.to_string());
+                    info.default_sink_name.as_ref().map(|s| s.to_string());
             });
 
             loop {
@@ -58,15 +75,12 @@ impl PulseAudioVolumeProvider {
             }
         }
 
-
         let default_sink_name = default_sink_name
             .borrow()
             .clone()
             .ok_or(anyhow!("Failed to get default sink name"))?;
 
-
         let monitor_source = format!("{}.monitor", default_sink_name);
-
 
         const PEAKS_RATE: u32 = 144;
 
@@ -84,21 +98,39 @@ impl PulseAudioVolumeProvider {
             minreq: 0,
         };
 
-
-        let monitor_stream = Rc::new(RefCell::new(Stream::new(&mut *context.borrow_mut(), "Peak detect", &sample_spec, None).ok_or(anyhow!("Failed to create monitoring stream"))?));
-        monitor_stream.borrow_mut().connect_record(Some(&monitor_source), Some(&buffer_attributes), stream::FlagSet::PEAK_DETECT | stream::FlagSet::ADJUST_LATENCY)?;
+        let monitor_stream = Rc::new(RefCell::new(
+            Stream::new(
+                &mut *context.borrow_mut(),
+                "Peak detect",
+                &sample_spec,
+                None,
+            )
+            .ok_or(anyhow!("Failed to create monitoring stream"))?,
+        ));
+        monitor_stream.borrow_mut().connect_record(
+            Some(&monitor_source),
+            Some(&buffer_attributes),
+            stream::FlagSet::PEAK_DETECT | stream::FlagSet::ADJUST_LATENCY,
+        )?;
 
         loop {
             match monitor_stream.borrow_mut().get_state() {
-                stream::State::Unconnected | stream::State::Creating => main_loop.borrow_mut().iterate(false),
+                stream::State::Unconnected | stream::State::Creating => {
+                    main_loop.borrow_mut().iterate(false)
+                }
                 stream::State::Ready => break,
-                stream::State::Failed | stream::State::Terminated => panic!("Failed to connect monitor stream"),
+                stream::State::Failed | stream::State::Terminated => {
+                    panic!("Failed to connect monitor stream")
+                }
             };
         }
 
-        Ok(PulseAudioVolumeProvider { main_loop, context, monitor_stream })
+        Ok(PulseAudioVolumeProvider {
+            main_loop,
+            context,
+            monitor_stream,
+        })
     }
-
 }
 
 impl VolumeProvider for PulseAudioVolumeProvider {
@@ -119,7 +151,7 @@ impl VolumeProvider for PulseAudioVolumeProvider {
                 stream.discard()?;
                 let peak = f32::from_ne_bytes(bytes) * 2.0; // HACK: Replace multiplier with compression
                 Ok(Some(peak))
-            },
+            }
         }
     }
 }
