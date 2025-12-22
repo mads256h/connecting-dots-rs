@@ -1,0 +1,52 @@
+name: Rust
+
+permissions:
+  checks: write
+  pull-requests: write
+
+on:
+  push:
+    branches: [ "master" ]
+  pull_request:
+    branches: [ "master" ]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install pulse
+        run: |
+          sudo apt-get update
+          sudo apt-get install libpulse-dev
+
+      - uses: actions-rs/toolchain@v1
+        with:
+          profile: minimal
+          toolchain: stable
+          override: true
+
+      - uses: Swatinem/rust-cache@v2
+
+      - uses: actions-rs/cargo@v1
+        with:
+          command: build
+
+      - uses: actions-rs/cargo@v1
+        with:
+          command: test
+
+      - uses: giraffate/clippy-action@v1
+        with:
+          reporter: 'github-pr-review'
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          clippy_flags: --all-features --all-targets -- -Dwarnings
+          workdir: ./${{ matrix.project }}
+          fail_on_error: true
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check

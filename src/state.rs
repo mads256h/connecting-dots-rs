@@ -138,7 +138,7 @@ impl State {
         });
 
 
-        let point_size = 5.0f32;
+        let point_size = 0f32;
 
         let point_size_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Point Size Buffer"),
