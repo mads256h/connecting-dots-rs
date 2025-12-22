@@ -3,12 +3,21 @@
 
   inputs = {
     nixpkgs.url = "github:nixos/nixpkgs/nixpkgs-unstable";
+    rust-overlay.url = "github:oxalica/rust-overlay";
   };
 
-  outputs = {nixpkgs, ...}:
+  outputs = {nixpkgs, rust-overlay, ...}:
     let
     system = "x86_64-linux";
-    pkgs = import nixpkgs { inherit system; };
+    pkgs = import nixpkgs {
+        inherit system;
+        overlays = [ (import rust-overlay) ];
+        config.allowUnfree = true;
+      };
+
+      rustToolchain = pkgs.rust-bin.stable."1.88.0".default.override {
+        extensions = [ "rust-src" "clippy" "rustfmt" ];
+      };
     lib = pkgs.lib;
     in 
     {
@@ -32,10 +41,29 @@
           vulkan-headers
           vulkan-loader
           vulkan-validation-layers
+          pulseaudio
+          pulseaudio.dev
+
+          openssl
+          pkg-config
+
+          jetbrains.rust-rover
         ];
 
+        nativeBuildInputs = with pkgs; [
+          rustToolchain
+        ];
+
+        shellHook = ''
+          mkdir -p ~/.rust-rover/toolchain
+
+          ln -sfn ${rustToolchain}/lib ~/.rust-rover/toolchain
+          ln -sfn ${rustToolchain}/bin ~/.rust-rover/toolchain
+
+          export RUST_SRC_PATH="$HOME/.rust-rover/toolchain/lib/rustlib/src/rust/library"
+        '';
+
         LD_LIBRARY_PATH = "${lib.makeLibraryPath buildInputs}";
-        RUST_SRC_PATH = "${pkgs.rust.packages.stable.rustPlatform.rustLibSrc}";
         RUST_BACKTRACE="full";
         RUST_LOG="debug";
       };

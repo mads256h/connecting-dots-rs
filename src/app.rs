@@ -1,6 +1,7 @@
 use std::{sync::Arc, time::Instant};
 
-use winit::{application::ApplicationHandler, window::Window};
+use log::info;
+use winit::{application::ApplicationHandler, platform::wayland::WindowAttributesExtWayland, window::Window};
 #[cfg(target_arch = "wasm32")]
 use winit::event_loop;
 
@@ -11,10 +12,13 @@ pub struct App {
     proxy: Option<winit::event_loop::EventLoopProxy<State>>,
     state: Option<State>,
     last_update: Instant,
+    background_image: Option<String>,
+    #[cfg(not(target_arch = "wasm32"))]
+    class: String,
 }
 
 impl App {
-    pub fn new(#[cfg(target_arch = "wasm32")] event_loop: &EventLoop<State>) -> Self {
+    pub fn new(#[cfg(target_arch = "wasm32")] event_loop: &EventLoop<State>, background_image: Option<String>, #[cfg(not(target_arch = "wasm32"))] class: String) -> Self {
         #[cfg(target_arch = "wasm32")]
         let proxy = Some(event_loop.create_proxy());
 
@@ -23,6 +27,8 @@ impl App {
             #[cfg(target_arch = "wasm32")]
             proxy,
             last_update: Instant::now(),
+            background_image,
+            class,
         }
     }
 }
@@ -30,7 +36,10 @@ impl App {
 impl ApplicationHandler<State> for App {
     fn resumed(&mut self, event_loop: &winit::event_loop::ActiveEventLoop) {
         #[allow(unused_mut)]
-        let mut window_attributes = Window::default_attributes();
+        let mut window_attributes = Window::default_attributes()
+            .with_name(self.class.clone(), self.class.clone())
+            .with_title("connecting-dots")
+            .with_decorations(false);
 
         #[cfg(target_arch = "wasm32")]
         {
@@ -50,7 +59,7 @@ impl ApplicationHandler<State> for App {
 
         #[cfg(not(target_arch = "wasm32"))]
         {
-            self.state = Some(pollster::block_on(State::new(window)).unwrap());
+            self.state = Some(pollster::block_on(State::new(window, self.background_image.clone())).unwrap());
         }
 
         #[cfg(target_arch = "wasm32")]
@@ -90,6 +99,7 @@ impl ApplicationHandler<State> for App {
 
         match event {
             winit::event::WindowEvent::Resized(size) => state.resize(size.width, size.height),
+            winit::event::WindowEvent::Moved(pos) => info!("Moved {pos:?}"),
             winit::event::WindowEvent::CloseRequested => event_loop.exit(),
             winit::event::WindowEvent::RedrawRequested => {
                 let now = Instant::now();
