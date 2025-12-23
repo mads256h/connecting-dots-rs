@@ -612,10 +612,7 @@ impl State {
         self.queue
             .write_buffer(&self.delta_time_buffer, 0, bytemuck::bytes_of(&delta_time));
 
-        let mut intensity = if let Some(intensity) = self
-            .volume_provider
-            .poll_volume()
-            .unwrap() {
+        let mut intensity = if let Some(intensity) = self.volume_provider.poll_volume().unwrap() {
             intensity * self.intensity_multiplier
         } else {
             f32::max(self.last_intensity - delta_time / 20.0, 0.0)
@@ -626,11 +623,10 @@ impl State {
             info!("Intensity: {intensity} Multiplier: {intensity_multiplier}");
             self.intensity_multiplier /= intensity;
             intensity = 1.0;
+        } else if intensity != 0.0 {
+            self.intensity_multiplier =
+                f32::min(self.intensity_multiplier + delta_time / 20.0, 100.0);
         }
-        else if intensity != 0.0 {
-            self.intensity_multiplier = f32::min(self.intensity_multiplier + delta_time / 20.0, 100.0);
-        }
-
 
         self.queue
             .write_buffer(&self.intensity_buffer, 0, bytemuck::bytes_of(&intensity));
