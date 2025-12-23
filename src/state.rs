@@ -1,4 +1,4 @@
-use bytemuck::{Pod, Zeroable, bytes_of};
+use bytemuck::{Pod, Zeroable};
 use log::info;
 use rand::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -7,17 +7,12 @@ use std::sync::Arc;
 use std::time::Duration;
 use std::vec;
 use wgpu::util::DeviceExt;
-use wgpu::{
-    BindGroup, BindingResource, Buffer, CompositeAlphaMode, ComputePipeline, Device,
-    RenderPipeline, ShaderStages, TextureView,
-};
 use winit::window::Window;
 
 #[cfg(target_arch = "wasm32")]
 use wasm_bindgen::prelude::*;
 
-use crate::volume_providers::pulse::PulseAudioVolumeProvider;
-use crate::volume_providers::volume_provider::VolumeProvider;
+use crate::volume_providers::volume_provider::{VolumeProvider, get_volume_provider};
 
 const SAMPLE_COUNT: u32 = 4;
 
@@ -29,22 +24,23 @@ pub struct State {
     queue: wgpu::Queue,
     config: wgpu::SurfaceConfiguration,
     is_surface_configured: bool,
-    msaa_texture_view: TextureView,
+    msaa_texture_view: wgpu::TextureView,
 
-    window_size_buffer: Buffer,
-    window_pos_buffer: Buffer,
-    delta_time_buffer: Buffer,
-    intensity_buffer: Buffer,
+    window_size_buffer: wgpu::Buffer,
+    window_pos_buffer: wgpu::Buffer,
+    delta_time_buffer: wgpu::Buffer,
+    intensity_buffer: wgpu::Buffer,
     last_intensity: f32,
-    points_buffer: Buffer,
+    intensity_multiplier: f32,
+    points_buffer: wgpu::Buffer,
 
     compute_new_positions_pipeline: wgpu::ComputePipeline,
-    compute_new_positions_bind_group: BindGroup,
+    compute_new_positions_bind_group: wgpu::BindGroup,
 
     render_pipeline: wgpu::RenderPipeline,
-    render_bind_group: BindGroup,
+    render_bind_group: wgpu::BindGroup,
 
-    background_image_state: Option<(RenderPipeline, BindGroup)>,
+    background_image_state: Option<(wgpu::RenderPipeline, wgpu::BindGroup)>,
 
     points_count: usize,
 
@@ -143,7 +139,7 @@ impl State {
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
 
-        let point_size = 0f32;
+        let point_size = 5f32;
 
         let point_size_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Point Size Buffer"),
@@ -326,7 +322,7 @@ impl State {
 
             let background_image_render_pipeline =
                 device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                    label: Some("Render Pipeline"),
+                    label: Some("Background Image Render Pipeline"),
                     layout: Some(&background_image_render_pipeline_layout),
                     vertex: wgpu::VertexState {
                         module: &background_image_shader,
@@ -481,7 +477,7 @@ impl State {
             cache: None,
         });
 
-        let volume_provider = Rc::new(PulseAudioVolumeProvider::new()?);
+        let volume_provider = get_volume_provider();
 
         Ok(Self {
             window,
@@ -496,6 +492,7 @@ impl State {
             delta_time_buffer,
             intensity_buffer,
             last_intensity: intensity,
+            intensity_multiplier: 1.0,
             points_buffer,
             compute_new_positions_pipeline,
             compute_new_positions_bind_group,
@@ -614,22 +611,38 @@ impl State {
         let delta_time = delta_time.as_secs_f32();
         self.queue
             .write_buffer(&self.delta_time_buffer, 0, bytemuck::bytes_of(&delta_time));
-        let intensity = self
+
+        let mut intensity = if let Some(intensity) = self
             .volume_provider
             .poll_volume()
-            .unwrap()
-            .unwrap_or(self.last_intensity);
+            .unwrap() {
+            intensity * self.intensity_multiplier
+        } else {
+            f32::max(self.last_intensity - delta_time / 20.0, 0.0)
+        };
+
+        if intensity > 1.0 {
+            let intensity_multiplier = self.intensity_multiplier;
+            info!("Intensity: {intensity} Multiplier: {intensity_multiplier}");
+            self.intensity_multiplier /= intensity;
+            intensity = 1.0;
+        }
+        else if intensity != 0.0 {
+            self.intensity_multiplier = f32::min(self.intensity_multiplier + delta_time / 20.0, 100.0);
+        }
+
+
         self.queue
             .write_buffer(&self.intensity_buffer, 0, bytemuck::bytes_of(&intensity));
         self.last_intensity = intensity;
     }
 
     fn create_compute_new_positions_pipeline(
-        device: &Device,
-        points_buffer: &Buffer,
-        window_size_buffer: &Buffer,
-        delta_time_buffer: &Buffer,
-    ) -> (ComputePipeline, BindGroup) {
+        device: &wgpu::Device,
+        points_buffer: &wgpu::Buffer,
+        window_size_buffer: &wgpu::Buffer,
+        delta_time_buffer: &wgpu::Buffer,
+    ) -> (wgpu::ComputePipeline, wgpu::BindGroup) {
         let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("Compute New Positions Bind Group layout"),
             entries: &[
@@ -731,7 +744,7 @@ impl State {
             });
         }
 
-        return points;
+        points
     }
 
     fn create_msaa_texture(
@@ -789,7 +802,7 @@ impl State {
                 .height as f32;
             let y = monitor_height - (self.window.inner_size().height as f32 + client.at[1]);
 
-            return Ok(WindowSize { size: [x, y] });
+            Ok(WindowSize { size: [x, y] })
         }
     }
 }

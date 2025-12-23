@@ -14,7 +14,6 @@ use libpulse_binding::{
     stream::{self, Stream},
 };
 use libpulse_sys::pa_operation_state_t;
-use log::info;
 
 pub struct PulseAudioVolumeProvider {
     main_loop: Rc<RefCell<Mainloop>>,
@@ -149,7 +148,7 @@ impl VolumeProvider for PulseAudioVolumeProvider {
                 let len = items.len();
                 let bytes: [u8; 4] = items[len - 4..len].try_into()?;
                 stream.discard()?;
-                let peak = f32::from_ne_bytes(bytes) * 2.0; // HACK: Replace multiplier with compression
+                let peak = f32::from_ne_bytes(bytes);
                 Ok(Some(peak))
             }
         }
